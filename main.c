@@ -1,23 +1,23 @@
 #include <stdio.h>
-#include <memory.h>
+#include <string.h>
 #include <stdlib.h>
+#include <stdint.h>
+#include <errno.h>
 
-#define min(a, b) (a <= b ? a : b)
+typedef uint8_t u8;
+typedef int8_t s8;
+typedef uint16_t u16;
 
-typedef __uint8_t u8;
-typedef __int8_t s8;
-typedef __uint16_t u16;
+const char *regs16[4] = {"bc", "de", "hl", "sp"};
+const char *regs16_2[4] = {"bc", "de", "hli", "hld"};
+const char *regs16_3[4] = {"bc", "de", "hl", "af"};
+const char *regs8[8] = {"b", "c", "d", "e", "h", "l", "[hl]", "a"};
+const char *flags[4] = {"nz", "z", "nc", "c"};
+const char *arith[8] = {"add", "adc", "sub", "sbc", "and", "xor", "or", "cp"};
+const char *bitops[8] = {"rlc", "rrc", "rl", "rr", "sla", "sra", "swap", "srl"};
+const char *bitops2[3] = {"bit", "res", "set"};
 
-char *regs16[4] = {"bc", "de", "hl", "sp"};
-char *regs16_2[4] = {"bc", "de", "hli", "hld"};
-char *regs16_3[4] = {"bc", "de", "hl", "af"};
-char *regs8[8] = {"b", "c", "d", "e", "h", "l", "[hl]", "a"};
-char *flags[4] = {"nz", "z", "nc", "c"};
-char *arith[8] = {"add", "adc", "sub", "sbc", "and", "xor", "or", "cp"};
-char *bitops[8] = {"rlc", "rrc", "rl", "rr", "sla", "sra", "swap", "srl"};
-char *bitops2[3] = {"bit", "res", "set"};
-
-typedef struct GbAddr {
+typedef struct {
     u8 bank;
     u16 addr;
 } gbaddr_t;
@@ -31,18 +31,25 @@ gbaddr_t inttogbaddr(long addr) {
     return output;
 }
 
+#define FILE_READ_ERROR(size) {\
+    fprintf(stderr, "error: failed to read %d bytes\n", size);\
+    exit(EIO);\
+}
+
 int get_opcode(char *dest, FILE *file) {
     u8 arg8;
     u16 arg16;
     u8 opcode;
     int size;
 #define READ(amt) {\
-    fread(&arg##amt, sizeof arg##amt, 1, file);\
+    if (fread(&arg##amt, sizeof arg##amt, 1, file) != sizeof arg##amt) \
+        FILE_READ_ERROR((amt) / 8); \
     size += sizeof arg##amt;}
 #define READ8 READ(8)
 #define READ16 READ(16)
     size = 1;
-    fread(&opcode, sizeof opcode, 1, file);
+    if (fread(&opcode, sizeof opcode, 1, file) != sizeof opcode)
+        FILE_READ_ERROR(1);
     switch (opcode) {
         case 0x00:
             strcpy(dest, "nop");
@@ -159,11 +166,11 @@ int get_opcode(char *dest, FILE *file) {
         case 0x3f:
             strcpy(dest, "ccf");
             break;
-        case 0x77:
+        case 0x76:
             strcpy(dest, "halt");
             break;
-        case 0x40 ... 0x76:
-        case 0x78 ... 0x7f:
+        case 0x40 ... 0x75:
+        case 0x77 ... 0x7f:
             sprintf(dest, "ld %s, %s", regs8[(opcode - 0x40) >> 3], regs8[opcode & 0x07]);
             break;
         case 0x80 ... 0xbf:
@@ -303,13 +310,14 @@ int main(int argc, char *argv[]) {
     char buff2[3];
     int size;
     long curpos;
-    long eof;
     gbaddr_t gbaddr;
     FILE *file = fopen(argv[1], "rb");
-    fseek(file, 0, SEEK_END);
-    eof = min(ftell(file), start + length);
+    if (file == NULL) {
+        fprintf(stderr, "error: file not found: %s\n", argv[1]);
+        return ENOENT;
+    }
     fseek(file, start, SEEK_SET);
-    while ((curpos = ftell(file)) < eof) {
+    while (!feof(file) && (curpos = ftell(file)) < start + length) {
         gbaddr = inttogbaddr(curpos);
         memset(buffer, 0, sizeof buffer);
         memset(buff2, 0, sizeof buff2);
@@ -317,7 +325,8 @@ int main(int argc, char *argv[]) {
         if (size == 0)
             return 2;
         fseek(file, -size, SEEK_CUR);
-        fread(buff2, 1, (size_t)size, file);
+        if (fread(buff2, 1, (size_t)size, file) != size)
+            FILE_READ_ERROR(size);
         printf("%08zx (%02x:%04x) %-20s (", curpos, gbaddr.bank, gbaddr.addr, buffer);
         for (int i=0; i<size; i++) {
             printf("%02x", (u8)buff2[i]);
